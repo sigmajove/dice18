@@ -3,13 +3,18 @@
 // Make sure M_PI gets defined
 #define _USE_MATH_DEFINES
 
+#include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <format>
+#include <functional>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <random>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -71,6 +76,11 @@ Vector Normal(const HalfSpace& h) {
   return Vector(std::get<0>(h), std::get<1>(h), std::get<2>(h));
 }
 
+std::string Format(const HalfSpace& h) {
+  return std::format("({}, {}, {}, {})", std::get<0>(h), std::get<1>(h),
+                     std::get<2>(h), std::get<3>(h));
+}
+
 // Returns true of a and b are within a floating point roundoff error
 // from each other.  Borrowed from Python
 bool IsClose(double a, double b) {
@@ -87,6 +97,14 @@ class Vertex {
     return ::IsClose(x_, other.x_) && ::IsClose(y_, other.y_) &&
            ::IsClose(z_, other.z_);
   }
+
+  friend Vector operator-(const Vertex& lhs, const Vertex& rhs) {
+    return Vector(lhs.x_ - rhs.x_, lhs.y_ - rhs.y_, lhs.z_ - rhs.z_);
+  }
+
+  // Converts the Vertex to a Vector.
+  // It's the vector from the origin (0, 0, 0) the Vertex.
+  Vector ToVector() const { return Vector(x_, y_, z_); }
 
   double x() const { return x_; }
   double y() const { return y_; }
@@ -161,8 +179,8 @@ std::optional<Vertex> PlaneLine(const HalfSpace& plane,
 }
 
 // Return the point (if any) where three planes intersect.
-std::optional<Vertex>
-ThreePlanes(const HalfSpace& p0, const HalfSpace &p1, const HalfSpace &p2) {
+std::optional<Vertex> ThreePlanes(const HalfSpace& p0, const HalfSpace& p1,
+                                  const HalfSpace& p2) {
   const auto& xyz = PlaneIntersection(p0, p1);
   if (xyz) {
     return PlaneLine(p2, *xyz);
@@ -192,14 +210,22 @@ std::vector<HalfSpace> GenHalves() {
 
 class VertexMap {
  public:
+  using KeyVal = std::pair<Vertex, std::set<std::size_t>>;
+
+  std::size_t size() const { return map_.size(); }
+  const KeyVal& get(std::size_t i) const { return map_[i]; }
+
   void Insert(const Vertex& v, const std::set<std::size_t>& faces);
 
-  const std::vector<std::pair<Vertex, std::set<std::size_t>>>& map() {
-    return map_;
+  // Removes every map entry filter(key_val) returns true.
+  void Filter(std::function<bool(const KeyVal&)> filter) {
+    map_.erase(std::remove_if(map_.begin(), map_.end(), filter), map_.end());
   }
 
+  const std::vector<KeyVal>& map() const { return map_; }
+
  private:
-  std::vector<std::pair<Vertex, std::set<std::size_t>>> map_;
+  std::vector<KeyVal> map_;
 };
 
 void VertexMap::Insert(const Vertex& v, const std::set<std::size_t>& faces) {
@@ -212,14 +238,221 @@ void VertexMap::Insert(const Vertex& v, const std::set<std::size_t>& faces) {
   map_.emplace_back(v, faces);
 }
 
-int main() {
-  const HalfSpace p0 = std::make_tuple(0, 0, 1, -5);  // z == 5
-  const HalfSpace p1 = std::make_tuple(0, 1, 0, -7);  // y == 7
-  const HalfSpace p2 = std::make_tuple(1, 0, 0, -8);  // x == 8
-  const auto result = ThreePlanes(p2, p0, p1);
-  if (result) {
-    std::cout << result.value().Format() << "\n";
-  } else {
-    std::cout << "parallel";
+// Given three vertices v0, v1, v2 of a polygon in the border plane for half,
+// return whether the are in counterclockwise order, as viewed from outside
+// the half-space.
+bool IsCounterclockwise(const Vertex& v0, const Vertex& v1, const Vertex& v2,
+                        const HalfSpace half) {
+  return DotProduct(CrossProduct(v1 - v0, v2 - v1), Normal(half)) > 0;
+}
+
+using PolyFace = std::pair<std::vector<Vertex>, std::vector<std::size_t>>;
+
+std::vector<PolyFace> FindPolyhedron(const std::vector<HalfSpace>& halves) {
+  VertexMap points;
+
+  // Find all combinations of the input planes to intersect.
+  // This will give us all possible points.
+  for (std::size_t i = 0; i < halves.size(); ++i) {
+    const HalfSpace& half_i = halves[i];
+    for (std::size_t j = i + 1; j < halves.size(); ++j) {
+      const HalfSpace& half_j = halves[j];
+      for (std::size_t k = i + 1; k < halves.size(); ++k) {
+        const HalfSpace& half_k = halves[k];
+        const auto vertex = ThreePlanes(half_i, half_j, half_k);
+        if (vertex) {
+          points.Insert(*vertex, std::set<size_t>({i, j, k}));
+        }
+      }
+    }
+  }
+
+  // Throw out all the points in the map that are not in all the half-spaces.
+  points.Filter([halves](const VertexMap::KeyVal& element) -> bool {
+    const auto& [vertex, faces] = element;
+    for (std::size_t i = 0; i < halves.size(); ++i) {
+      // Don't consider the faces that contain the vertex.
+      if (faces.find(i) == faces.end()) {
+        const HalfSpace& h = halves[i];
+        if (DotProduct(Normal(h), vertex.ToVector()) + std::get<3>(h) >
+            EPSILON) {
+          // The vertex is not in the half-space h.
+          // Discard the vertex
+          return true;
+        }
+      }
+    }
+    return false;
+  });
+
+  // For each face, maintain a vector of all the edges on the face.
+  // The edge is represent by a tuple (const Vertex*, const Vertex*, other_face)
+  // At this time, we don't try to order the vertices.
+  // The Verticies are owned by the the map points.
+  std::vector<
+      std::vector<std::tuple<const Vertex*, const Vertex*, std::size_t>>>
+      face_edges(halves.size());
+
+  // Consider all pairs of vertices.
+  for (size_t i = 0; i < points.size(); ++i) {
+    const auto& [v_i, f_i] = points.get(i);
+    for (size_t j = i + 1; j < points.size(); ++j) {
+      const auto& [v_j, f_j] = points.get(j);
+      // Count the number of faces in common.
+      std::vector<std::size_t> faces;
+      std::set_intersection(f_i.begin(), f_i.end(), f_j.begin(), f_j.end(),
+                            std::back_inserter(faces));
+      if (faces.size() == 2) {
+        // Record the existence of an edge between v_i and v_j.
+        face_edges[faces[0]].push_back(std::make_tuple(&v_i, &v_j, faces[1]));
+        face_edges[faces[1]].push_back(std::make_tuple(&v_i, &v_j, faces[0]));
+      }
+    }
+  }
+
+  // Finally, we can build the list of vertices of each face, in
+  // counterclockwise order, and the list of other adjacent faces
+  // The two lists are the same size.
+  std::vector<PolyFace> result;
+
+  for (std::size_t i = 0; i < face_edges.size(); ++i) {
+    std::vector<const Vertex*> vertices;
+    std::vector<std::size_t> faces;
+
+    const HalfSpace& half = halves[i];
+    const auto& fe = face_edges[i];
+    // Grab the first edge listed on the face.
+    const auto& [v0, v1, f1] = fe[0];
+    // Search for another edge containing v1.
+    // When we find it, we will have three consecutive vertices.
+    // Push them in counterclockwise order.
+    for (std::size_t j = 1; j < fe.size(); ++j) {
+      const auto& [v2, v3, f2] = fe[j];
+      if (v2 == v1) {
+        if (IsCounterclockwise(*v0, *v1, *v3, half)) {
+          vertices.push_back(v0);
+          vertices.push_back(v1);
+          vertices.push_back(v3);
+          faces.push_back(f1);
+          faces.push_back(f2);
+        } else {
+          vertices.push_back(v3);
+          vertices.push_back(v1);
+          vertices.push_back(v0);
+          faces.push_back(f2);
+          faces.push_back(f1);
+        }
+        break;
+      }
+      if (v3 == v1) {
+        if (IsCounterclockwise(*v0, *v1, *v2, half)) {
+          vertices.push_back(v0);
+          vertices.push_back(v1);
+          vertices.push_back(v2);
+          faces.push_back(f1);
+          faces.push_back(f2);
+        } else {
+          vertices.push_back(v2);
+          vertices.push_back(v1);
+          vertices.push_back(v0);
+          faces.push_back(f2);
+          faces.push_back(f1);
+        }
+        break;
+      }
+    }
+    if (vertices.empty()) {
+      // We couldn't find another edge containing v1.
+      // This can happen if the face is open.
+      throw std::invalid_argument("Incomplete face");
+    }
+
+    for (;;) {
+      // Find a vertex to add onto the end of vertices.
+      const Vertex* next_v = nullptr;
+      for (const auto& [v0, v1, f] : fe) {
+        const Vertex* const last = vertices.back();
+        const Vertex* const last2 = vertices[vertices.size() - 2];
+        if (v0 == last) {
+          if (v1 == last2) {
+            // Don't pick the edge from the previous iteration.
+            continue;
+          }
+          next_v = v1;
+          faces.push_back(f);
+          break;
+        }
+        if (v1 == last) {
+          if (v0 == last2) {
+            // Don't pick the edge from the previous iteration.
+            continue;
+          }
+          next_v = v0;
+          faces.push_back(f);
+          break;
+        }
+      }
+      if (next_v == nullptr) {
+        // We couldn't find another edge containing last.
+        // This can happen if the face is open.
+        throw std::invalid_argument("Incomplete face");
+      }
+      if (next_v == vertices.front()) {
+        // We have completed the loop. We're done.
+        break;
+      }
+      if (vertices.size() >= fe.size()) {
+        // Something went wrong. If the edges form a proper loop,
+        // we cannot have more vertices the edges.
+        throw std::logic_error("Loop in face?");
+      }
+      vertices.push_back(next_v);
+    }
+
+    // Add the vertices and faces we just computed to the result.
+    // However, we cannot return the pointers in vertices, since
+    // the Vertex objects the point to will not survive the function.
+    // So we have to copy all the Vertex objects pointed to.
+    result.emplace_back(std::vector<Vertex>(), faces);
+    std::vector<Vertex>& tail = result.back().first;
+    tail.reserve(vertices.size());
+    for (const Vertex* v : vertices) {
+      tail.push_back(*v);
+    }
+  }
+  return result;
+}
+
+HalfSpace make_octa_face(const Vertex& p0, const Vertex& p1, const Vertex& p2) {
+  const Vector c = CrossProduct(p2 - p1, p0 - p1);
+  return std::make_tuple(c.dx(), c.dy(), c.dz(), -DotProduct(p0.ToVector(), c));
+}
+
+// Test code for octahedron.
+void test() {
+  const Vertex NW(-1, 1, 0);
+  const Vertex NE(1, 1, 0);
+  const Vertex SW(-1, -1, 0);
+  const Vertex SE(1, -1, 0);
+  const Vertex TOP = Vertex(0, 0, std::sqrt(2.0));
+  const Vertex BOTTOM = Vertex(0, 0, -std::sqrt(2.0));
+  const auto f0 = make_octa_face(SE, NE, TOP);
+  const auto f1 = make_octa_face(NE, NW, TOP);
+  const auto f2 = make_octa_face(NW, SW, TOP);
+  const auto f3 = make_octa_face(SW, SE, TOP);
+  const auto f4 = make_octa_face(NE, SE, BOTTOM);
+  const auto f5 = make_octa_face(NW, NE, BOTTOM);
+  const auto f6 = make_octa_face(SW, NW, BOTTOM);
+  const auto f7 = make_octa_face(SE, SW, BOTTOM);
+  const auto poly = FindPolyhedron({f0, f1, f2, f3, f4, f5, f6, f7});
+  for (std::size_t i = 0; i < poly.size(); ++i) {
+    std::cout << "========= Face " << i << "\n";
+    const auto& [vertices, faces] = poly[i];
+    assert(vertices.size() == faces.size());
+    for (std::size_t j = 0; j < vertices.size(); ++j) {
+      std::cout << vertices[j].Format() << " " << faces[j] << "\n";
+    }
   }
 }
+
+int main() { test(); }
