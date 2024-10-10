@@ -66,20 +66,35 @@ Vector CrossProduct(const Vector& v0, const Vector& v1) {
                 v0.dx() * v1.dy() - v0.dy() * v1.dx());
 }
 
-// The half-space (a, b, c, d) is defined by the equation
-// a*x + b*y + c*z - d <= 0.
-using HalfSpace = std::tuple<double, double, double, double>;
+class HalfSpace {
+ public:
+  // The half-space (a, b, c, d) is defined by the equation
+  // a*x + b*y + c*z - d <= 0.
+  HalfSpace(double a, double b, double c, double d)
+      : a_(a), b_(b), c_(c), d_(d) {}
 
-// Return a vector that is perpendicular to the boundary plane of
-// h, pointing out of the half-space.
-Vector Normal(const HalfSpace& h) {
-  return Vector(std::get<0>(h), std::get<1>(h), std::get<2>(h));
-}
+  std::tuple<double, double, double, double> Parameters() const {
+    return std::make_tuple(a_, b_, c_, d_);
+  } 
 
-std::string Format(const HalfSpace& h) {
-  return std::format("({}, {}, {}, {})", std::get<0>(h), std::get<1>(h),
-                     std::get<2>(h), std::get<3>(h));
-}
+  // Returns a vector that is perpendicular to the boundary plane,
+  // pointing out of the half-space.
+  Vector Normal() const { return Vector(a_, b_, c_); }
+
+  // Normal defines the orientation of the boundary plane, and Position
+  // defines its position.
+  double Position() const { return d_; }
+
+  std::string Format() const {
+    return std::format("({}, {}, {}, {})", a_, b_, c_, d_);
+  }
+
+ private:
+  double a_;
+  double b_;
+  double c_;
+  double d_;
+};
 
 // Returns true of a and b are within a floating point roundoff error
 // from each other.  Borrowed from Python
@@ -124,7 +139,7 @@ class Vertex {
 std::optional<std::pair<Vertex, Vector>> PlaneIntersection(
     const HalfSpace& plane1, const HalfSpace& plane2) {
   // The vector we will return.
-  const Vector vector = CrossProduct(Normal(plane1), Normal(plane2));
+  const Vector vector = CrossProduct(plane1.Normal(), plane2.Normal());
 
   // Find a point on the intersection of the two planes.
   // We set one of x, y, or z to zero. Then we have two linear
@@ -140,8 +155,8 @@ std::optional<std::pair<Vertex, Vector>> PlaneIntersection(
     return std::nullopt;
   }
 
-  const auto [a1, b1, c1, d1] = plane1;
-  const auto [a2, b2, c2, d2] = plane2;
+  const auto [a1, b1, c1, d1] = plane1.Parameters();
+  const auto [a2, b2, c2, d2] = plane2.Parameters();
 
   double x, y, z;
   if (m == adx) {
@@ -165,13 +180,13 @@ std::optional<std::pair<Vertex, Vector>> PlaneIntersection(
 std::optional<Vertex> PlaneLine(const HalfSpace& plane,
                                 const std::pair<Vertex, Vector>& line) {
   const Vector& vector = line.second;
-  const double denom = DotProduct(Normal(plane), vector);
+  const double denom = DotProduct(plane.Normal(), vector);
   if (std::abs(denom) < EPSILON) {
     // The plane and line are parallel; there is no point to return.
     return std::nullopt;
   }
   const Vertex& vertex = line.first;
-  const auto [a, b, c, d] = plane;
+  const auto [a, b, c, d] = plane.Parameters();
   const double t =
       (a * vertex.x() + b * vertex.y() + c * vertex.z() + d) / denom;
   return Vertex(vertex.x() - t * vector.dx(), vertex.y() - t * vector.dy(),
@@ -243,7 +258,7 @@ void VertexMap::Insert(const Vertex& v, const std::set<std::size_t>& faces) {
 // the half-space.
 bool IsCounterclockwise(const Vertex& v0, const Vertex& v1, const Vertex& v2,
                         const HalfSpace half) {
-  return DotProduct(CrossProduct(v1 - v0, v2 - v1), Normal(half)) > 0;
+  return DotProduct(CrossProduct(v1 - v0, v2 - v1), half.Normal()) > 0;
 }
 
 using PolyFace = std::pair<std::vector<Vertex>, std::vector<std::size_t>>;
@@ -274,7 +289,7 @@ std::vector<PolyFace> FindPolyhedron(const std::vector<HalfSpace>& halves) {
       // Don't consider the faces that contain the vertex.
       if (faces.find(i) == faces.end()) {
         const HalfSpace& h = halves[i];
-        if (DotProduct(Normal(h), vertex.ToVector()) + std::get<3>(h) >
+        if (DotProduct(h.Normal(), vertex.ToVector()) + h.Position() >
             EPSILON) {
           // The vertex is not in the half-space h.
           // Discard the vertex
@@ -286,7 +301,8 @@ std::vector<PolyFace> FindPolyhedron(const std::vector<HalfSpace>& halves) {
   });
 
   // For each face, maintain a vector of all the edges on the face.
-  // The edge is represent by a tuple (const Vertex*, const Vertex*, other_face)
+  // The edge is represented by a tuple (const Vertex*, const Vertex*,
+  // other_face).
   // At this time, we don't try to order the vertices.
   // The Verticies are owned by the the map points.
   std::vector<
@@ -425,7 +441,7 @@ std::vector<PolyFace> FindPolyhedron(const std::vector<HalfSpace>& halves) {
 
 HalfSpace make_octa_face(const Vertex& p0, const Vertex& p1, const Vertex& p2) {
   const Vector c = CrossProduct(p2 - p1, p0 - p1);
-  return std::make_tuple(c.dx(), c.dy(), c.dz(), -DotProduct(p0.ToVector(), c));
+  return HalfSpace(c.dx(), c.dy(), c.dz(), -DotProduct(p0.ToVector(), c));
 }
 
 // Test code for octahedron.
