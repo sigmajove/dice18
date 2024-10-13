@@ -542,6 +542,9 @@ class PolyFinder {
     std::vector<HalfSpace> result;
     result.reserve(18);
     while (result.size() < 18) {
+      // We try to avoid points that are too close. This leads to
+      // dihedral angles near 180 degrees and wonky floating
+      // point calculations when computing their intersections.
       bool good_found = false;
       double x;
       double y;
@@ -638,7 +641,7 @@ int main() {
 
   // Start all the threads.
   for (unsigned i = 0; i < n; ++i) {
-    threads.push_back(std::thread([&finders, i]() { finders[i].Run(60*6); }));
+    threads.push_back(std::thread([&finders, i]() { finders[i].Run(60 * 6); }));
   }
 
   // Wait for them to finish.
