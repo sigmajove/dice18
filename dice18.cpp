@@ -18,7 +18,6 @@
 #include <optional>
 #include <random>
 #include <set>
-#include <stdexcept>
 #include <string>
 #include <thread>
 #include <tuple>
