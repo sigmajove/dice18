@@ -66,6 +66,7 @@ Vector CrossProduct(const Vector& v0, const Vector& v1) {
                 v0.dx() * v1.dy() - v0.dy() * v1.dx());
 }
 
+// An infinite plane separates 3-space into two half spaces.
 class HalfSpace {
  public:
   // The half-space (a, b, c, d) is defined by the equation
@@ -105,7 +106,7 @@ class HalfSpace {
 };
 
 // Returns true if a and b are within a floating point roundoff error
-// from each other.  Borrowed from Python.  The tolerance values have
+// from each other. Borrowed from Python. The tolerance values have
 // been chosen experimentally.
 bool IsClose(double a, double b) {
   return std::abs(a - b) <=
@@ -212,12 +213,13 @@ std::optional<Vertex> ThreePlanes(const HalfSpace& p0, const HalfSpace& p1,
                 vertex.z() - t * vector.dz());
 }
 
+// For each vertex, records all the faces that touch it.
 class VertexMap {
  public:
   using KeyVal = std::pair<Vertex, std::set<std::size_t>>;
 
+  // The number of items in the map.
   std::size_t size() const { return map_.size(); }
-  const KeyVal& get(std::size_t i) const { return map_[i]; }
 
   // Return an integer that can be used with get()
   size_t key(const Vertex& v) {
@@ -225,15 +227,17 @@ class VertexMap {
                         [&v](const KeyVal kv) { return kv.first == v; }) -
            map_.begin();
   }
+  const KeyVal& get(std::size_t i) const { return map_[i]; }
 
+  // Merges faces into the set of faces associated with v.
+  // Use a relaxed compare to deal with roundoff errors when computing
+  // the coordinates of vertices.
   void Insert(const Vertex& v, const std::set<std::size_t>& faces);
 
-  // Removes every map entry filter(key_val) returns true.
+  // Removes every map entry for which filter(key_val) returns true.
   void Filter(std::function<bool(const KeyVal&)> filter) {
     map_.erase(std::remove_if(map_.begin(), map_.end(), filter), map_.end());
   }
-
-  const std::vector<KeyVal>& map() const { return map_; }
 
  private:
   std::vector<KeyVal> map_;
@@ -252,14 +256,14 @@ void VertexMap::Insert(const Vertex& v, const std::set<std::size_t>& faces) {
 }
 
 // Given three vertices v0, v1, v2 of a polygon in the border plane for half,
-// return whether the are in counterclockwise order, as viewed from outside
+// returns whether they are in counterclockwise order, as viewed from outside
 // the half-space.
 bool IsCounterclockwise(const Vertex& v0, const Vertex& v1, const Vertex& v2,
                         const HalfSpace half) {
   return DotProduct(CrossProduct(v1 - v0, v2 - v1), half.Normal()) > 0;
 }
 
-// Compute the area of a convex polygon by dividing it into triangles and
+// Computes the area of a convex polygon by dividing it into triangles and
 // adding their areas. This only works if the input verticies are coplanar.
 double Area(const std::vector<const Vertex*>& vertices) {
   assert(vertices.size() >= 2);
@@ -276,6 +280,8 @@ double Area(const std::vector<const Vertex*>& vertices) {
   return 0.5 * result;
 }
 
+// Writes half-space parameters to a file, so that they can be
+// processed by a different program.
 void DumpHalves(const std::vector<HalfSpace>& halves,
                 const std::string& filename) {
   std::cout << "Writing model to " << filename << "\n";
@@ -287,6 +293,7 @@ void DumpHalves(const std::vector<HalfSpace>& halves,
   out_file.close();
 }
 
+// Reads half-space parameters from a file. Used for debugging.
 std::vector<HalfSpace> ReadHalves(const std::string& filename) {
   std::ifstream file(filename, std::ios::binary);
   if (!file.is_open()) {
@@ -312,11 +319,10 @@ std::vector<HalfSpace> ReadHalves(const std::string& filename) {
 
 // The goal of this project is to try to find polyhedra whose faces
 // are close in area. This function evaluates a set of half-spaces.
-// It constructs the polyhedron, scores it.
-// Scores are improved by having the faces be close to the same side,
-// and the edges being close to the same lenght.
-// Worse scores are smaller. If the half spaces do not form a finite polyhedron,
-// the score returned is -1.0.
+// It constructs the polyhedron and scores it.
+// Scores are improved by having the faces be close to the same size.
+// Perfect score is 1.0; worse scores are smaller. If the half spaces do
+// not form a finite polyhedron, the score returned is -1.0.
 double MeasurePolyhedron(const std::vector<HalfSpace>& halves) {
   VertexMap points;
 
@@ -357,14 +363,12 @@ double MeasurePolyhedron(const std::vector<HalfSpace>& halves) {
   // For each face, maintain a vector of all the edges on the face.
   // The edge is represented by a tuple (const Vertex*, const Vertex*,
   // other_face).
-  // At this time, we don't try to order the vertices.
-  // The Verticies are owned by the the map points.
+  // We don't try to order the vertices. The verticies are owned by the
+  // VertexMap points.
   std::vector<
       std::vector<std::tuple<const Vertex*, const Vertex*, std::size_t>>>
       face_edges(halves.size());
 
-  double min_edge = std::numeric_limits<double>::max();
-  double max_edge = std::numeric_limits<double>::lowest();
   // Consider all pairs of vertices.
   for (size_t i = 0; i < points.size(); ++i) {
     const auto& [v_i, f_i] = points.get(i);
@@ -378,32 +382,24 @@ double MeasurePolyhedron(const std::vector<HalfSpace>& halves) {
         // Record the existence of an edge between v_i and v_j.
         face_edges[faces[0]].push_back(std::make_tuple(&v_i, &v_j, faces[1]));
         face_edges[faces[1]].push_back(std::make_tuple(&v_i, &v_j, faces[0]));
-
-        // Calculate the length of the edge.
-        const double length = (v_i - v_j).Magnitude();
-        if (length < min_edge) {
-          min_edge = length;
-        }
-        if (length > max_edge) {
-          max_edge = length;
-        }
       }
     }
   }
 
   // Finally, we can build the list of vertices of each face, in
-  // counterclockwise order, and the list of other adjacent faces
-  // The two lists are the same size.
+  // counterclockwise order.
+
+  // Used to score the polyhedron.
   double min_area = std::numeric_limits<double>::max();
   double max_area = std::numeric_limits<double>::lowest();
 
   for (std::size_t i = 0; i < face_edges.size(); ++i) {
     std::vector<const Vertex*> vertices;
-    std::vector<std::size_t> faces;
 
     const HalfSpace& half = halves[i];
     const auto& fe = face_edges[i];
     // Grab the first edge listed on the face.
+
     const auto& [v0, v1, f1] = fe[0];
     // Search for another edge containing v1.
     // When we find it, we will have three consecutive vertices.
@@ -415,14 +411,10 @@ double MeasurePolyhedron(const std::vector<HalfSpace>& halves) {
           vertices.push_back(v0);
           vertices.push_back(v1);
           vertices.push_back(v3);
-          faces.push_back(f1);
-          faces.push_back(f2);
         } else {
           vertices.push_back(v3);
           vertices.push_back(v1);
           vertices.push_back(v0);
-          faces.push_back(f2);
-          faces.push_back(f1);
         }
         break;
       }
@@ -431,14 +423,10 @@ double MeasurePolyhedron(const std::vector<HalfSpace>& halves) {
           vertices.push_back(v0);
           vertices.push_back(v1);
           vertices.push_back(v2);
-          faces.push_back(f1);
-          faces.push_back(f2);
         } else {
           vertices.push_back(v2);
           vertices.push_back(v1);
           vertices.push_back(v0);
-          faces.push_back(f2);
-          faces.push_back(f1);
         }
         break;
       }
@@ -461,7 +449,6 @@ double MeasurePolyhedron(const std::vector<HalfSpace>& halves) {
             continue;
           }
           next_v = v1;
-          faces.push_back(f);
           break;
         }
         if (v1 == last) {
@@ -470,7 +457,6 @@ double MeasurePolyhedron(const std::vector<HalfSpace>& halves) {
             continue;
           }
           next_v = v0;
-          faces.push_back(f);
           break;
         }
       }
@@ -486,8 +472,8 @@ double MeasurePolyhedron(const std::vector<HalfSpace>& halves) {
       if (vertices.size() >= fe.size()) {
         // Something went wrong. If the edges form a proper loop,
         // we cannot have more vertices the edges.
-        // This shouldn't happen but sometimes it does.
-        // I need to debug it evetually, but for now skip it.
+        // In the past this problem is due to floating point roundoff
+        // error, and was fixed by relaxing IsClose.
         std::cout << "Bad model?\n";
         DumpHalves(halves, "c:/users/sigma/documents/bad_model.bin");
         return -1;
@@ -504,26 +490,27 @@ double MeasurePolyhedron(const std::vector<HalfSpace>& halves) {
     }
   }
 
-  const double area_score = min_area / max_area;
-  const double edge_score = min_edge / max_edge;
-
-  // Not clear how to weight the two scores.
-  return area_score;
+  return min_area / max_area;
 }
 
+// Generates random polyhedra and scores them, keeping the best one.
 class PolyFinder {
  public:
   PolyFinder() {}
 
+  // Generates and scores as many random polyhedra as it can in
+  // the given number of minutes. We expect this function to be
+  // called only once.
   void Run(int minutes);
 
+  // These values are available when Run returns.
   const std::vector<HalfSpace>& best() { return best_; }
   double best_score() const { return best_score_; }
   std::size_t success() const { return success_; }
 
  private:
   // Returns a random double r, where 0.0 < r < 1.0
-  double Rand01() {
+  double RandFraction() {
     for (;;) {
       double result = dis_(gen_);
       if (0.0 < result && result < 1.0) {
@@ -533,57 +520,8 @@ class PolyFinder {
   }
 
   // Generates 18 half-spaces by choosing 9 random points on a sphere,
-  // and for each point, including its antipode.
-  std::vector<HalfSpace> GenHalves() {
-    std::vector<HalfSpace> result;
-    result.reserve(18);
-    while (result.size() < 18) {
-      // We try to avoid points that are too close. This leads to
-      // dihedral angles near 180 degrees and wonky floating
-      // point calculations when computing their intersections.
-      bool good_found = false;
-      double x;
-      double y;
-      double z;
-      // Try 25 times for a new point far enough away from all the others.
-      for (int i = 0; i < 25; i++) {
-        // Generate a random point on the unit sphere.
-        // See https://mathworld.wolfram.com/SpherePointPicking.html
-        const double theta = 2 * M_PI * Rand01();
-        const double phi = std::acos(2 * Rand01() - 1);
-        const double sin_phi = std::sin(phi);
-        x = std::cos(theta) * sin_phi;
-        y = std::sin(theta) * sin_phi;
-        z = std::cos(phi);
-        const Vector v(x, y, z);
-
-        // Check if the new point is too close to any existing points.
-        bool too_close = false;
-        for (const HalfSpace& h : result) {
-          if ((v - h.Normal()).Magnitude() < 0.35) {
-            too_close = true;
-            break;
-          }
-        }
-        if (!too_close) {
-          good_found = true;
-          break;
-        }
-      }
-      if (good_found) {
-        // Push the half spaces defined by the point and its antipode.
-        result.push_back(HalfSpace(x, y, z, -1.0));
-        result.push_back(HalfSpace(-x, -y, -z, -1.0));
-      } else {
-        // There is no room for the next point.
-        // Start over.
-        std::cout << "Starting Over\n";
-        result.clear();
-      }
-    }
-
-    return result;
-  }
+  // and for each point, including both the point and its antipode.
+  std::vector<HalfSpace> GenHalves();
 
   std::random_device rd_;
   std::mt19937 gen_{rd_()};
@@ -592,6 +530,56 @@ class PolyFinder {
   double best_score_{-1.0};
   std::size_t success_{0};
 };
+
+std::vector<HalfSpace> PolyFinder::GenHalves() {
+  std::vector<HalfSpace> result;
+  result.reserve(18);
+  while (result.size() < 18) {
+    // We try to avoid points that are too close. This leads to
+    // dihedral angles near 180 degrees and wonky floating
+    // point calculations when computing their intersections.
+    bool good_found = false;
+    double x;
+    double y;
+    double z;
+    // Try 25 times for a new point far enough away from all the others.
+    for (int i = 0; i < 25; i++) {
+      // Generate a random point on the unit sphere.
+      // See https://mathworld.wolfram.com/SpherePointPicking.html
+      const double theta = 2 * M_PI * RandFraction();
+      const double phi = std::acos(2 * RandFraction() - 1);
+      const double sin_phi = std::sin(phi);
+      x = std::cos(theta) * sin_phi;
+      y = std::sin(theta) * sin_phi;
+      z = std::cos(phi);
+      const Vector v(x, y, z);
+
+      // Check if the new point is too close to any existing points.
+      bool too_close = false;
+      for (const HalfSpace& h : result) {
+        if ((v - h.Normal()).Magnitude() < 0.35) {
+          too_close = true;
+          break;
+        }
+      }
+      if (!too_close) {
+        good_found = true;
+        break;
+      }
+    }
+    if (good_found) {
+      // Push the half spaces defined by the point and its antipode.
+      result.push_back(HalfSpace(x, y, z, -1.0));
+      result.push_back(HalfSpace(-x, -y, -z, -1.0));
+    } else {
+      // There is no room for the next point.
+      // Start over.
+      std::cout << "Starting Over\n";
+      result.clear();
+    }
+  }
+  return result;
+}
 
 void PolyFinder::Run(int minutes) {
   std::size_t success = 0;
@@ -620,14 +608,6 @@ void PolyFinder::Run(int minutes) {
   best_ = best;
 }
 
-int test_main() {
-  const std::vector<HalfSpace> halves =
-      ReadHalves("c:/users/sigma/documents/bad_model.bin");
-  std::cout << std::format("Read {} halfs\n", halves.size());
-  const double m = MeasurePolyhedron(halves);
-  std::cout << "Score " << m << "\n";
-}
-
 int main() {
   const unsigned n = std::thread::hardware_concurrency();
   std::cout << "Running " << n << " threads\n";
@@ -635,12 +615,12 @@ int main() {
   std::vector<std::thread> threads;
   threads.reserve(n);
 
-  // Start all the threads.
+  // Start all the threads. Each will run for six hours.
   for (unsigned i = 0; i < n; ++i) {
-    threads.push_back(std::thread([&finders, i]() { finders[i].Run(60 * 6); }));
+    threads.push_back(std::thread([&finders, i]() { finders[i].Run(6*60); }));
   }
 
-  // Wait for them to finish.
+  // Wait for them all to finish.
   double best_score = -1.0;
   std::size_t num_candidates = 0;
   unsigned best_thread = n;  // Invalid value
@@ -654,56 +634,14 @@ int main() {
     }
   }
   if (num_candidates == 0) {
-    std::cout << "Didn't find any?\n";
+    std::cout << "Didn't find any candidates?\n";
     return 0;
   }
+
+  // Write the best result into a file.
   std::cout << "There were " << num_candidates << " candidates\n";
   std::cout << "Best score " << best_score << "\n";
   DumpHalves(finders[best_thread].best(),
              "c:/users/sigma/documents/best_halves.bin");
   return 0;
-}
-
-// Test code for octahedron.
-HalfSpace make_octa_face(const Vertex& p0, const Vertex& p1, const Vertex& p2) {
-  const Vector c = CrossProduct(p2 - p1, p0 - p1);
-  return HalfSpace(c.dx(), c.dy(), c.dz(), -DotProduct(p0.ToVector(), c));
-}
-
-void TestOctahedron() {
-  const Vertex NW(-1, 1, 0);
-  const Vertex NE(1, 1, 0);
-  const Vertex SW(-1, -1, 0);
-  const Vertex SE(1, -1, 0);
-  const Vertex TOP = Vertex(0, 0, std::sqrt(2.0));
-  const Vertex BOTTOM = Vertex(0, 0, -std::sqrt(2.0));
-  const auto f0 = make_octa_face(SE, NE, TOP);
-  const auto f1 = make_octa_face(NE, NW, TOP);
-  const auto f2 = make_octa_face(NW, SW, TOP);
-  const auto f3 = make_octa_face(SW, SE, TOP);
-  const auto f4 = make_octa_face(NE, SE, BOTTOM);
-  const auto f5 = make_octa_face(NW, NE, BOTTOM);
-  const auto f6 = make_octa_face(SW, NW, BOTTOM);
-  const auto f7 = make_octa_face(SE, SW, BOTTOM);
-  std::cout << MeasurePolyhedron({f0, f1, f2, f3, f4, f5, f6, f7}) << "\n";
-}
-
-void TestCube() {
-  const HalfSpace x_hi(1.0, 0.0, 0.0, -1.0);
-  const HalfSpace x_lo(-1.0, 0.0, 0.0, -1.0);
-  const HalfSpace y_hi(0.0, 1.0, 0.0, -1.0);
-  const HalfSpace y_lo(0.0, -1.0, 0.0, -1.0);
-  const HalfSpace z_hi(0, 0.0, 1.0, -1.0);
-  const HalfSpace z_lo(0.0, 0.0, -1.0, -1.0);
-  std::cout << MeasurePolyhedron({x_hi, x_lo, y_hi, y_lo, z_hi, z_lo}) << "\n";
-}
-
-void TestOblong() {
-  const HalfSpace x_hi(2.0, 0.0, 0.0, -1.0);
-  const HalfSpace x_lo(-2.0, 0.0, 0.0, -1.0);
-  const HalfSpace y_hi(0.0, 1.0, 0.0, -1.0);
-  const HalfSpace y_lo(0.0, -1.0, 0.0, -1.0);
-  const HalfSpace z_hi(0, 0.0, 1.0, -1.0);
-  const HalfSpace z_lo(0.0, 0.0, -1.0, -1.0);
-  std::cout << MeasurePolyhedron({x_hi, x_lo, y_hi, y_lo, z_hi, z_lo}) << "\n";
 }
