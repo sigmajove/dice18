@@ -189,31 +189,27 @@ std::optional<std::pair<Vertex, Vector>> PlaneIntersection(
   return std::make_pair(Vertex(x, y, z), vector);
 }
 
-// Given a plane and a line, find the point (if any) where they intersect.
-std::optional<Vertex> PlaneLine(const HalfSpace& plane,
-                                const std::pair<Vertex, Vector>& line) {
-  const Vector& vector = line.second;
-  const double denom = DotProduct(plane.Normal(), vector);
-  if (std::abs(denom) < EPSILON) {
-    // The plane and line are parallel; there is no point to return.
-    return std::nullopt;
-  }
-  const Vertex& vertex = line.first;
-  const auto [a, b, c, d] = plane.Parameters();
-  const double t =
-      (a * vertex.x() + b * vertex.y() + c * vertex.z() + d) / denom;
-  return Vertex(vertex.x() - t * vector.dx(), vertex.y() - t * vector.dy(),
-                vertex.z() - t * vector.dz());
-}
-
 // Return the point (if any) where three planes intersect.
 std::optional<Vertex> ThreePlanes(const HalfSpace& p0, const HalfSpace& p1,
                                   const HalfSpace& p2) {
-  const auto& xyz = PlaneIntersection(p0, p1);
-  if (xyz) {
-    return PlaneLine(p2, *xyz);
+  const auto& intersection = PlaneIntersection(p0, p1);
+  if (!intersection.has_value()) {
+    // p0 and p1 are parallel.
+    return std::nullopt;
   }
-  return std::nullopt;
+
+  // Find the point where the where the p0/p1 intersection crosses p2.
+  const auto& [vertex, vector] = *intersection;
+  const double denom = DotProduct(p2.Normal(), vector);
+  if (std::abs(denom) < EPSILON) {
+    // p2 and the intersection intersection are (almost) parallel;
+    // there is no point to return.
+    return std::nullopt;
+  }
+  const double t =
+      (DotProduct(p2.Normal(), vertex.ToVector()) + p2.Position()) / denom;
+  return Vertex(vertex.x() - t * vector.dx(), vertex.y() - t * vector.dy(),
+                vertex.z() - t * vector.dz());
 }
 
 class VertexMap {
